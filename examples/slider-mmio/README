@@ -1,0 +1,29 @@
+
+  Simple Python example
+  ~~~~~~~~~~~~~~~~~~~~~~
+
+This example displays a slider on the screen, using Tk, that can be manipulated
+to send an interrupt to the VM. The VM can then read the current position of
+the slider.
+
+1. On your computer, install the CoreIO module:
+  * go to the coreio library directory and type `pip3 install .'
+
+2. Create a VM to run your consumer program on.
+  * in Settings | Custom vMMIO, add a port with the following settings:
+
+    START       SIZE        IRQ         PORT
+    <mmio-addr> 0x1000      <irq>       4300
+
+3. Make sure your computer is connected to the VM's project VPN.
+
+4. Find out the Services IP for the consumer VM. (Let's say it's 10.11.211.9)
+
+5. On your computer, run `python3 slider-mmio.py 10.11.211.9:4300'.
+  * a small window with a slider should show up on the screen.
+
+6. Moving the slider will assert the IRQ you specified when creating the VM.
+  * to clear the IRQ, your program can write <mmio-addr> with any value.
+
+7. At any time, your program in the VM can read address <mmio-addr>+4 to find
+   out the current slider position.

@@ -1,0 +1,151 @@
+
+  CoreIO library
+  ~~~~~~~~~~~~~~~
+
+The CoreIO library allows external programs to act as MMIO responders, send
+interrupt requests to the VM, and perform DMA.
+
+To use the library in your C program, you need to connect to a VM:
+
+    int coreio_connect(const char *target);
+      Connect to a VM.
+        target          string like "10.10.0.3:23456"
+      Returns error flag.
+
+If the result was zero, you can continue using the CoreIO API.
+
+The API is based around a few concepts. First, there's the vMMIO range. Each
+range is a 4k-aligned block of address space that a CoreIO client can claim.
+Ranges are indexed from 0, in the order they were specified during VM creation.
+
+To claim a vMMIO range, create and fill out a callback structure:
+
+    #define COREIO_FLAGS_IFETCH     2
+    #define COREIO_FLAGS_PRIV       4
+    #define COREIO_FLAGS_SECURE     8
+
+    typedef struct {
+        /* MMIO operations. */
+        int (*read)(void *priv, uint64_t addr, size_t len, void *buf, unsigned flags);
+        int (*write)(void *priv, uint64_t addr, size_t len, void *buf, unsigned flags);
+        /* MMIO pair-wise operations. If not supplied, read/write are used twice. */
+        int (*readp)(void *priv, uint64_t addr, size_t len, void *buf1, void *buf2, unsigned flags);
+        int (*writep)(void *priv, uint64_t addr, size_t len, void *buf1, void *buf2, unsigned flags);
+    } coreio_func_t;
+
+The read/write functions are called with your private pointer (supplied when
+registering as funcp). They also receive the full address (VM's physical
+address of the access), access length in bytes, the actual data buffer to
+read or write to, and a few flags describing access mode.
+
+The functions can return 1 to signal failure, which will become a bus error
+when it hits the VM.
+
+After you have your handlers and coreio_func_t filled out, register it:
+
+    int coreio_register(unsigned rid, const coreio_func_t *func, void *funcp);
+      Register a MMIO handler.
+        rid             MMIO range ID to register
+        func            io handler function table
+        funcp           io handler function parameter (passed to callbacks)
+      Returns error flag.
+
+Then, you must construct a main loop of your program. The main loop support
+is intended to work with select(). You call coreio_preparefds before select()
+to add CoreIO's sockets to select wait list, and coreio_processfds after select
+to process the socket events:
+
+    int coreio_preparefds(int nfds, fd_set *readfds, fd_set *writefds);
+      Prepare fd_sets for select(2).
+        nfds            current index of maximum fd in sets + 1
+        readfds         readfds to update
+        writefds        writefds to update
+      Returns new nfds.
+
+    int coreio_processfds(fd_set *readfds, fd_set *writefds);
+      Process fd_sets after select(2).
+        readfds         readfds to process
+        writefds        writefds to process
+      Returns error flag (for instance, connection to VM lost).
+
+A simple implementation of a main loop, without any other event processing,
+looks like this:
+
+    /* ... */
+    fd_set readfds, writefds;
+    int res;
+
+    while(1) {
+        FD_ZERO(&writefds);
+        FD_ZERO(&readfds);
+        int nfds = coreio_preparefds(0, &readfds, &writefds);
+        if(nfds < 0) /* error in prepare */
+            break;
+        select(nfds, &readfds, &writefds, NULL, NULL);
+        res = coreio_processfds(&readfds, &writefds);
+        if(res) /* error in process */
+            break;
+    }
+    /* ... */
+
+This kind of main loop, with a timeout, is provided as a convenience by the
+library:
+
+    int coreio_mainloop(long long usec);
+      Simple implementation of a main loop.
+        usec            time to spend in loop, in microseconds;
+                        negative means forever
+      Returns error flag.
+
+In addition to processing MMIO events, your program can also send interrupts.
+Note that in the VMs, all interrupt lines are level (the interrupt controller
+can interpret them as edge, but to trigger an edge interrupt, you must send
+two updates: one from 0 to 1, one from 1 to 0 - it's not enough to just send
+1 every time: there'll be no edge).
+
+    int coreio_irq_update(unsigned rid, unsigned iid, unsigned state);
+      Send an IRQ update.
+        rid             MMIO range ID associated with IRQ
+        iid             IRQ index
+        state           IRQ line state (1 - active, 0 - inactive)
+
+There are two ways to perform DMA access, blocking and non-blocking. Blocking
+access is simpler. You just call a read/write function, and it returns when
+it's done. Non-blocking access requires you to pass a completion function
+(and its opaque parameter pointer, which will be passed to it without change).
+The function will be called at a future time, during coreio_processfds().
+
+    int coreio_dma_read(unsigned mid, unsigned sid, uint64_t addr, size_t len,
+                        void *buf, unsigned flags,
+                        void (*cpl)(void *, int), void *cplp);
+      Start a DMA read.
+        mid             IOMMU ID (0 = direct)
+        sid             IOMMU region ID
+        addr            target address
+        size            size of read to perform
+        buf             memory buffer to fill with data
+        flags           bus access flags
+        cpl             completion function; if NULL, call is blocking
+        cplp            completion function parameter
+      Returns error flag.
+
+    int coreio_dma_write(unsigned mid, unsigned sid, uint64_t addr, size_t len,
+                         void *buf, unsigned flags,
+                         void (*cpl)(void *, int), void *cplp);
+      Start a DMA write.
+        mid             IOMMU ID (0 = direct)
+        sid             IOMMU region ID
+        addr            target address
+        size            size of write to perform
+        buf             memory buffer with data
+        flags           bus access flags
+        cpl             completion function; if NULL, call is blocking
+        cplp            completion function parameter
+      Returns error flag.
+
+On most small VMs, you can pass 0 as IOMMU ID and region ID. That specifies
+that the access should access VM physical memory directly.
+
+Finally, to cleanly shut down the CoreIO library, use:
+
+    void coreio_disconnect(void);

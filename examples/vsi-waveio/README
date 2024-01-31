@@ -1,0 +1,32 @@
+
+  VSI-over-vMMIO
+  ~~~~~~~~~~~~~~~
+
+This program feeds a WAV file into the VM. It's based on the ARM VSI specification.
+
+1. Create & start a Raspberry Pi VM to run VSI model on.
+  * a `lite' image is fine,
+  * you will need to `apt-get install make gcc'.
+
+2. Put this directory on the Raspberry Pi, then run `make'.
+  * you should get a program called `vsi-waveio'.
+
+3. Put your WAV file on the Raspberry Pi.
+
+4. Create a VM to run the VSI consumer program on.
+  * in Settings | Custom vMMIO, add a port with the following settings:
+
+    START       SIZE        IRQ         PORT
+    <mmio addr> 0x20000     <irq list>  4300
+
+5. Start the consumer VM paused.
+
+6. Find out the Services IP for the consumer VM. (Let's say it's 10.11.211.9)
+
+7. In the Raspberry Pi VM, run `vsi-waveio 10.11.211.9:4300 test.wav'.
+  * the program should print `[vsi-waveio] Ready.' when everything is right.
+
+8. Unpause the consumer VM.
+
+9. Wait for the results.
+  * the vsi-waveio program shows MMIO accesses and also announces end of file.
